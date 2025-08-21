@@ -12,15 +12,25 @@ class SimpleCNN(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 32, 5, padding=2)
         self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-        self.pool = nn.MaxPool2d(2)
+        self.pool   = nn.MaxPool2d(2)
+
+        # Dropouts
+        self.drop2d = nn.Dropout2d(p=0.25)   # zero-out whole channels
+        self.drop   = nn.Dropout(p=0.2)      # zero-out individual neurons
+
         self.fc1 = nn.Linear(64 * 16 * 16, 128)
         self.fc2 = nn.Linear(128, 3)
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))  # (B, 32, 32, 32)
-        x = self.pool(F.relu(self.conv2(x)))  # (B, 64, 16, 16)
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.drop2d(x)                   # after first block
+
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.drop2d(x)                   # after second block
+
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
+        x = self.drop(x)                     # before final classifier
         return self.fc2(x)
 
 def main():
@@ -86,7 +96,7 @@ def main():
     wandb.init(project="dsprites_classifier")
     global_step = 0
 
-    output_dir = "dsprites_classifier"
+    output_dir = "dsprites_classifier_dropout_02_new"
     os.makedirs(output_dir, exist_ok=True)
 
     best_acc=0
@@ -103,7 +113,7 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             lr_scheduler.step()
-
+            opt.zero_grad()
             train_loss += loss.item()
             
             _, preds = outputs.max(1)

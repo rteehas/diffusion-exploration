@@ -202,6 +202,8 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument("--keep_percent", type=float, default=1.0, help="percent of the knockout class to keep")
+    parser.add_argument("--overfitting", action="store_true")
+    parser.add_argument("--subsample", action="store_true")
     parser.add_argument(
         "--input_perturbation", type=float, default=0, help="The scale of input perturbation. Recommended 0.1."
     )
@@ -558,6 +560,13 @@ def grad_norm(model, norm_type= 2):
         )
     return total.item()
 
+def psnr(pred, target, max_val=1.0):
+    # pred, target: (B,C,H,W) in [0,1]
+    mse = F.mse_loss(pred, target, reduction='none')
+    mse = mse.view(mse.size(0), -1).mean(dim=1)   # per-image
+    return 20 * torch.log10(torch.tensor(max_val)) - 10 * torch.log10(mse)
+
+
 def main():
     args = parse_args()
     # args.validation_prompts = ['a cat sitting on a couch',
@@ -571,7 +580,7 @@ def main():
     #                         'a dog sitting in the grass with its tongue out',
     #                         'a cat laying on a bed']
 
-    args.validation_prompts = get_validation_prompts(n=5)
+    args.validation_prompts = get_validation_prompts(n=2)
 
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
@@ -635,6 +644,17 @@ def main():
 
     # Load scheduler, tokenizer and models.
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+    # noise_scheduler = DDPMScheduler(
+    #     num_train_timesteps=1000,
+    #     beta_schedule="squaredcos_cap_v2",
+    #     prediction_type="v_prediction",
+    #     rescale_betas_zero_snr=True,
+    #     thresholding=True,                 # enables dynamic_thresholding_ratio
+    #     dynamic_thresholding_ratio=0.995,
+    #     clip_sample=False,                 # avoid double clipping
+    #     variance_type="fixed_small",       # or "learned_range"
+    # )
+
     tokenizer = CLIPTokenizer.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
     )
@@ -667,13 +687,28 @@ def main():
         # )
         # vae = AutoencoderKL.from_config(vae_config)
         vae = AutoencoderKL.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
+            "/home/t-ryanteehan/diffusion-exploration/dsprites_autoencoder_small_res/checkpoint-3000/autoencoderkl", subfolder="vae", revision=args.revision, variant=args.variant
         )
     
     if not args.resume_from_checkpoint:
         unet_config = UNet2DConditionModel.load_config(
             args.pretrained_model_name_or_path, subfolder="unet"
         )
+
+        unet_config['sample_size'] = 8
+        unet_config["block_out_channels"] = [320, 640, 1280]
+        
+        unet_config["down_block_types"] = [
+            "CrossAttnDownBlock2D",
+            "CrossAttnDownBlock2D",
+            "DownBlock2D"
+        ]
+
+        unet_config["up_block_types"] = [
+            "UpBlock2D",
+            "CrossAttnUpBlock2D",
+            "CrossAttnUpBlock2D"
+        ]
 
         unet = UNet2DConditionModel.from_config(unet_config)
     else:
@@ -691,9 +726,30 @@ def main():
 
     # Create EMA for the unet.
     if args.use_ema:
-        ema_unet = UNet2DConditionModel.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
+        ema_unet_config = UNet2DConditionModel.load_config(
+            args.pretrained_model_name_or_path, subfolder="unet"
         )
+
+        ema_unet_config['sample_size'] = 8
+        ema_unet_config["block_out_channels"] = [320, 640, 1280]
+        
+        ema_unet_config["down_block_types"] = [
+            "CrossAttnDownBlock2D",
+            "CrossAttnDownBlock2D",
+            "DownBlock2D"
+        ]
+
+        ema_unet_config["up_block_types"] = [
+            "UpBlock2D",
+            "CrossAttnUpBlock2D",
+            "CrossAttnUpBlock2D"
+        ]
+
+        ema_unet = UNet2DConditionModel.from_config(unet_config)
+
+        # ema_unet = UNet2DConditionModel.from_pretrained(
+        #     args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
+        # )
         ema_unet = EMAModel(
             ema_unet.parameters(),
             model_cls=UNet2DConditionModel,
@@ -849,6 +905,20 @@ def main():
         dataset = prepare_dsprites()
         dataset['train'] = knockout_percent_dsprites(knockout_class, args.keep_percent, dataset['train'])
         print(f"Final dataset as {dataset['train'].num_rows} rows")
+        if args.overfitting:
+            overfitting_sample_size = 10
+            sample_idxs = np.random.choice(dataset['train'].num_rows, size=overfitting_sample_size, replace=False).tolist()
+
+            dataset['train'] = dataset['train'].select(sample_idxs)
+        
+
+        if args.subsample:
+            subsample_percent = 0.1
+            num_to_select = int(subsample_percent * dataset['train'].num_rows)
+            sample_idxs = np.random.choice(dataset['train'].num_rows, size=num_to_select, replace=False).tolist()
+
+            dataset['train'] = dataset['train'].select(sample_idxs)
+
         # all_breeds = list(set(dataset['train']['label_breed']))
         # all_but_knockout = [b for b in all_breeds if b != knockout_cat]
         # dataset['train'] = concatenate_datasets([dataset['train'], dataset['test']])
@@ -946,7 +1016,8 @@ def main():
     )
 
     def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
+        # images = [image.convert("RGB") for image in examples[image_column]]
+        images = [image for image in examples[image_column]]
         examples["pixel_values"] = [train_transforms(image) for image in images]
         examples["input_ids"] = tokenize_captions(examples)
         return examples
@@ -1041,6 +1112,37 @@ def main():
         tracker_config = dict(vars(args))
         tracker_config.pop("validation_prompts")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
+
+
+    if args.overfitting:
+        for tracker in accelerator.trackers:
+            if tracker.name == "wandb":
+                
+                tracker.log(
+                    {
+                        "train images": [
+                            wandb.Image(ex['image'], caption=f"{idx}: {ex['caption_enriched']}")
+                            for idx, ex in enumerate(dataset['train'])
+                        ]
+                    }
+                )
+            else:
+                raise NotImplementedError
+    else:
+        for tracker in accelerator.trackers:
+            if tracker.name == "wandb":
+                
+                tracker.log(
+                    {
+                        "train images": [
+                            wandb.Image(ex['image'], caption=f"{idx}: {ex['caption_enriched']}")
+                            for idx, ex in enumerate(dataset['train'].select(list(range(10))))
+                        ]
+                    }
+                )
+            else:
+                raise NotImplementedError
+
 
     # Function for unwrapping if model was compiled with `torch.compile`.
     def unwrap_model(model):
@@ -1295,7 +1397,7 @@ def main():
 
             for i in range(len(args.validation_prompts)):
                 with torch.autocast("cuda"):
-                    image = pipeline(args.validation_prompts[i], num_inference_steps=20, generator=generator).images[0]
+                    image = pipeline(args.validation_prompts[i], num_inference_steps=20, generator=generator, width=args.resolution, height=args.resolution).images[0]
                 images.append(image)
 
         if args.push_to_hub:

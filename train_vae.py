@@ -1,15 +1,3 @@
-"""
-Variational Autoencoder (VAE) for 64×64 RGB images
-=================================================
-• Architecture: 4‑level strided Conv encoder ↔ ConvTranspose decoder.
-• Latent dimension, learning rate, etc. are CLI flags.
-• Training loop saves checkpoints + sample grids every 10 epochs.
-
-Usage (single‑GPU):
-$ python vae64_pytorch.py --data_root /path/to/images --epochs 100 --latent_dim 256
-
-Data format: ImageFolder‑style directory with class sub‑dirs; images will be resized to 64×64.
-"""
 import os, argparse, torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
@@ -17,73 +5,107 @@ from torchvision import datasets, transforms, utils
 import wandb
 from diffusers.optimization import get_scheduler
 from dsprites import *
-
-# ---------- Model Blocks ----------
-class Encoder(nn.Module):
-    def __init__(self, latent_dim: int = 128):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, 32, 4, 2, 1),  # 64 → 32
-            nn.ReLU(True),
-            nn.Conv2d(32, 64, 4, 2, 1),  # 32 → 16
-            nn.BatchNorm2d(64), nn.ReLU(True),
-            nn.Conv2d(64, 128, 4, 2, 1),  # 16 → 8
-            nn.BatchNorm2d(128), nn.ReLU(True),
-            nn.Conv2d(128, 256, 4, 2, 1),  # 8 → 4
-            nn.BatchNorm2d(256), nn.ReLU(True),
-        )
-        feat_dim = 256 * 4 * 4
-        self.fc_mu = nn.Linear(feat_dim, latent_dim)
-        self.fc_logvar = nn.Linear(feat_dim, latent_dim)
-
-    def forward(self, x):
-        x = self.conv(x).flatten(1)
-        return self.fc_mu(x), self.fc_logvar(x)
-
-class Decoder(nn.Module):
-    def __init__(self, latent_dim: int = 128):
-        super().__init__()
-        self.fc = nn.Linear(latent_dim, 256 * 4 * 4)
-        self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, 4, 2, 1),  # 4 → 8
-            nn.BatchNorm2d(128), nn.ReLU(True),
-            nn.ConvTranspose2d(128, 64, 4, 2, 1),   # 8 → 16
-            nn.BatchNorm2d(64), nn.ReLU(True),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),    # 16 → 32
-            nn.BatchNorm2d(32), nn.ReLU(True),
-            nn.ConvTranspose2d(32, 3, 4, 2, 1),     # 32 → 64
-            nn.Sigmoid(),
-        )
-
-    def forward(self, z):
-        z = self.fc(z).view(-1, 256, 4, 4)
-        return self.deconv(z)
+import torch.nn.functional as F
 
 class VAE(nn.Module):
-    def __init__(self, latent_dim: int = 128):
+    def __init__(self, data_dim, hidden_dim, latent_dim):
+        super(VAE, self).__init__()
+        
+        self.encoder_fc = nn.Sequential(
+            nn.Linear(data_dim, hidden_dim),
+            nn.GELU()
+            )
+        self.encoder_mu = nn.Linear(hidden_dim, latent_dim)
+        self.encoder_std = nn.Linear(hidden_dim, latent_dim)
+        # decoder part
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, data_dim),
+            nn.Sigmoid()
+        )
+    
+    def encode(self, x):
+        enc_x = self.encoder_fc(x)
+        mu = self.encoder_mu(enc_x)
+        sigma = self.encoder_std(enc_x)
+        return mu, sigma
+    
+    def reparameterize(self, mu, sigma):
+        std = (0.5 * sigma).exp()
+        return mu + std * torch.randn_like(std)
+    
+    def forward(self, x):
+        mu, sigma = self.encode(x)
+        z = self.reparameterize(mu, sigma)
+        return self.decoder(z), mu, sigma
+
+class ConvVAE(nn.Module):
+    """
+    64×64×1 → latent → 64×64×1
+    """
+    def __init__(self, latent_dim: int = 32):
         super().__init__()
-        self.encoder, self.decoder = Encoder(latent_dim), Decoder(latent_dim)
+
+        # ────────────── encoder ──────────────
+        self.enc = nn.Sequential(                     # out‑shape
+            nn.Conv2d(1,   32, 4, 2, 1), nn.GELU(),   # 32×32×32
+            nn.Conv2d(32,  64, 4, 2, 1), nn.GELU(),   # 64×16×16
+            nn.Conv2d(64, 128, 4, 2, 1), nn.GELU(),   # 128×8×8
+            nn.Conv2d(128,256, 4, 2, 1), nn.GELU()    # 256×4×4
+        )
+        self.flatten     = nn.Flatten()               # 256·4·4 = 4096
+        self.fc_mu       = nn.Linear(4096, latent_dim)
+        self.fc_logvar   = nn.Linear(4096, latent_dim)
+
+        # ────────────── decoder ──────────────
+        self.fc_dec = nn.Linear(latent_dim, 4096)
+        self.dec = nn.Sequential(
+            nn.ConvTranspose2d(256,128,4,2,1), nn.GELU(),  # 128×8×8
+            nn.ConvTranspose2d(128, 64,4,2,1), nn.GELU(),  # 64×16×16
+            nn.ConvTranspose2d( 64, 32,4,2,1), nn.GELU(),  # 32×32×32
+            nn.ConvTranspose2d( 32,  1,4,2,1), nn.Sigmoid()# 1×64×64
+        )
+
+    # ────────────── helpers ──────────────
+    def encode(self, x):
+        h = self.flatten(self.enc(x))
+        return self.fc_mu(h), self.fc_logvar(h)
 
     def reparameterize(self, mu, logvar):
         std = (0.5 * logvar).exp()
         return mu + std * torch.randn_like(std)
 
+    def decode(self, z):
+        h = self.fc_dec(z).view(-1, 256, 4, 4)
+        return self.dec(h)
+
+    # ────────────── forward ──────────────
     def forward(self, x):
-        mu, logvar = self.encoder(x)
-        z = self.reparameterize(mu, logvar)
-        return self.decoder(z), mu, logvar
+        mu, logvar = self.encode(x)
+        return self.decode(self.reparameterize(mu, logvar)), mu, logvar
 
 # ---------- Loss & Train ----------
 @torch.no_grad()
-def sample_grid(decoder, latent_dim, device):
-    z = torch.randn(64, latent_dim, device=device)
-    grid = decoder(z).cpu()
+def sample_grid(model, latent_dim, device):
+    z = torch.randn(1, latent_dim, device=device)
+    grid = model.decode(z).cpu()
     # utils.save_image(grid, f"samples/samples_{epoch:03d}.png", nrow=8)
     return grid
 
+# def vae_loss(x_hat, x, mu, sigma, beta):
+#     recon = nn.functional.binary_cross_entropy(x_hat, x, reduction="mean")
+#     kld = -0.5 * torch.sum(1 + sigma - mu.pow(2) - sigma.exp())
+#     # kld = 
+#     return recon + beta * kld, recon, kld
+
 def vae_loss(x_hat, x, mu, logvar):
-    recon = nn.functional.mse_loss(x_hat, x, reduction="sum")
-    kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    recon = F.binary_cross_entropy(x_hat, x, reduction="sum")
+
+    # KL divergence (mean across batch)
+    kld = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())     # shape [B, D]
+    kld = kld.sum(dim=1).sum()                               # scalar mean
+
     return recon + kld, recon, kld
 
 def get_arguments():
@@ -128,7 +150,7 @@ def main():
         [
             transforms.Resize(64, interpolation=interpolation),  # Use dynamic interpolation method
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
+            # transforms.Normalize([0.5], [0.5]),
         ]
     )
 
@@ -136,8 +158,8 @@ def main():
     dataset = dataset['train'].train_test_split(0.1)
 
     def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples["image"]]
-        examples["pixel_values"] = [train_transforms(image) for image in images]
+        # images = [image.convert("RGB") for image in examples["image"]]
+        examples["pixel_values"] = [train_transforms(image) for image in examples['image']]
         return examples
 
 
@@ -168,12 +190,12 @@ def main():
         drop_last=True
     )
 
-    model = VAE(args.latent_dim).to(device)
+    model = ConvVAE(args.latent_dim).to(device)
 
     optimizer = optim.AdamW(
         model.parameters(),
         lr=args.lr,
-        weight_decay=args.adam_weight_decay,
+        weight_decay=0.0,
     )
 
     num_update_steps_per_epoch = len(train_dataloader)
@@ -198,6 +220,9 @@ def main():
         for batch in train_dataloader:
             
             batch['pixel_values'] = batch['pixel_values'].to(device)
+            # print(batch['pixel_values'].shape)
+            # print(batch['pixel_values'].view(-1, 4096).shape)
+            
             x_hat, mu, logvar = model(batch['pixel_values'])
             loss, _, _ = vae_loss(x_hat, batch['pixel_values'], mu, logvar)
             loss.backward()
@@ -222,14 +247,14 @@ def main():
 
         val_images = []
         for s in range(num_val_samples):
-            img = sample_grid(model.decoder, args.latent_dim, device)
+            img = sample_grid(model, args.latent_dim, device)
             val_images.append(img)
         
 
         wandb.log(
             {
                 "validation": [
-                    wandb.Image(image, caption=f"{i}")
+                    wandb.Image(image.view(1, 64,64), caption=f"{i}")
                     for i, image in enumerate(val_images)
                 ]
             }
@@ -252,20 +277,3 @@ def train_epoch(model, loader, opt, device):
 # ---------- CLI ----------
 if __name__ == "__main__":
     main()
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # os.makedirs("samples", exist_ok=True)
-
-    # transform = transforms.Compose([
-    #     transforms.Resize((64, 64)), transforms.ToTensor()])
-    # ds = datasets.ImageFolder(args.data_root, transform)
-    # dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=4)
-
-    # model = VAE(args.latent_dim).to(device)
-    # opt = optim.Adam(model.parameters(), lr=args.lr)
-
-    # for epoch in range(1, args.epochs + 1):
-    #     loss = train_epoch(model, dl, opt, device)
-    #     print(f"epoch {epoch} | loss {loss:.2f}")
-    #     if epoch % 10 == 0:
-    #         sample_grid(model.decoder, args.latent_dim, epoch, device)
-    # torch.save(model.state_dict(), "vae64.pth")
