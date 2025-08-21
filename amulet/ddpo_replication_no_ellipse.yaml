@@ -1,0 +1,79 @@
+description: DDPO 
+
+target:
+  service: sing
+  name: palisades19
+
+environment:
+  image: amlt-sing/2.5.0-cuda12.4-cudnn9-devel
+  setup:
+    - conda create -n diffusion python=3.13.2 --yes
+    - source ~/.bashrc
+    - conda init
+    - conda activate diffusion
+    - pip install -r requirements.txt
+    - pip install --upgrade huggingface_hub
+    - pip install -U transformers
+    - pip install -U diffusers
+    - pip install -U trl
+    - pip install -U wandb
+    - pip install -U peft
+  env:
+    DATASET_RESERVED_FREE_DISK_SPACE: 90000000000
+
+code:
+  local_dir: /home/t-ryanteehan/diffusion-exploration
+  ignore:
+  - autoencoder_imgs/*
+  - dsprites_classifier/*
+  - dsprites_autoencoder_small_res/*
+  - dsprites_autoencoder/*
+  - dsprites_1.0_new_unet_config_subsample_verbose_captions_prompt_dropout/*
+  - dsprites_0.0_new_vae_v_pred/*
+  - wandb/*
+  - ViT-L-14.pt
+
+storage:
+    output:
+        storage_account_name: tryanteehanwsstorage
+        container_name: outputs
+        mount_dir: /mnt/outputs
+        mount_options: ["-o", "attr_timeout=240"]
+
+    shared_datastore:
+        storage_account_name: tryanteehanwsstorage
+        container_name: dsprites-checkpoints
+        mount_dir: /mnt/dsprites-checkpoints
+
+search:
+    job_template:
+        name: "{experiment_name:s}_no_ellipse_seed_{seed}_{random_string:s}"
+        sku: G1
+        command:
+        - python ddpo.py --amlt --num_epochs=5000 --train_gradient_accumulation_steps=1 --sample_num_steps=50 --sample_batch_size=15 --train_batch_size=3 --sample_num_batches_per_epoch=4 --per_prompt_stat_tracking=True --per_prompt_stat_tracking_buffer_size=32 --tracker_project_name="stable_diffusion_training" --log_with="wandb" --hard_rewards=False --mixed_precision="no" --save_freq=100000 --knockout=True --num_checkpoint_limit=4 --train_learning_rate=5e-6 --no_ellipse_prompts --seed={seed}
+        mpi: False
+        process_count_per_node: 1
+        submit_args:
+          env:
+            NCCL_DEBUG: info
+            _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/bbd59374-b76d-4cb5-88b6-2be35debc7cf/resourceGroups/t-ryanteehan/providers/Microsoft.ManagedIdentity/userAssignedIdentities/t-ryanteehan-ws-uai"
+
+    type: grid
+    max_trials: 6
+    params:
+        - name: seed
+          spec: discrete
+          values: [22,23,24,25,26,27]
+
+# jobs:
+# - name: ddpo_exploration
+#   sku: G1
+#   command:
+#   - python ddpo.py --amlt --num_epochs=5000 --train_gradient_accumulation_steps=1 --sample_num_steps=50 --sample_batch_size=15 --train_batch_size=3 --sample_num_batches_per_epoch=4 --per_prompt_stat_tracking=True --per_prompt_stat_tracking_buffer_size=32 --tracker_project_name="stable_diffusion_training" --log_with="wandb" --hard_rewards=False --mixed_precision="no" --save_freq=100000 --knockout=True --num_checkpoint_limit=4 --train_learning_rate=5e-6 --no_ellipse_prompts=False --seed=110 
+#   mpi: False
+#   process_count_per_node: 1
+#   submit_args:
+#     env:
+#       NCCL_DEBUG: info
+#       _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/bbd59374-b76d-4cb5-88b6-2be35debc7cf/resourceGroups/t-ryanteehan/providers/Microsoft.ManagedIdentity/userAssignedIdentities/t-ryanteehan-ws-uai"
+

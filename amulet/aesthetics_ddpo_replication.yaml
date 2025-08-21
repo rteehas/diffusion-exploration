@@ -1,0 +1,79 @@
+description: DDPO LR Sensitivity
+
+target:
+  service: sing
+  name: msroctobasicvc
+
+environment:
+  image: amlt-sing/2.5.0-cuda12.4-cudnn9-devel
+  setup:
+    - conda create -n diffusion python=3.13.2 --yes
+    - source ~/.bashrc
+    - conda init
+    - conda activate diffusion
+    - pip install -r requirements.txt
+    - pip install --upgrade huggingface_hub
+    - pip install -U transformers
+    - pip install -U diffusers
+    - pip install -U trl
+    - pip install -U wandb
+    - pip install -U peft
+    - pip install image-reward
+    - pip install -U timm
+    - pip install openai-clip
+  env:
+    DATASET_RESERVED_FREE_DISK_SPACE: 90000000000
+
+code:
+  local_dir: /home/t-ryanteehan/diffusion-exploration
+  ignore:
+  - autoencoder_imgs/*
+  - dsprites_classifier/*
+  - dsprites_autoencoder_small_res/*
+  - dsprites_autoencoder/*
+  - dsprites_1.0_new_unet_config_subsample_verbose_captions_prompt_dropout/*
+  - dsprites_0.0_new_vae_v_pred/*
+  - wandb/*
+  - ViT-L-14.pt
+  - seedselect_data/*
+  - diffusiondb_data/*
+  - tail_prompt_exploration.ipynb
+  - subsampled_dsprites_knockout/
+
+storage:
+    output:
+        storage_account_name: tryanteehanwsstorage
+        container_name: outputs
+        mount_dir: /mnt/outputs
+        mount_options: ["-o", "attr_timeout=240"]
+
+    shared_datastore:
+        storage_account_name: tryanteehanwsstorage
+        container_name: dsprites-checkpoints
+        mount_dir: /mnt/dsprites-checkpoints
+
+search:
+    job_template:
+        name: "{experiment_name:s}_lr_{lr}_seed_{seed}_no_tail_prompts_{no_tail}_{random_string:s}"
+        command:
+        - python aesthetics_ddpo.py --num_epochs=1000 --train_gradient_accumulation_steps=10 --sample_num_steps=50 --sample_batch_size=12 --train_adam_beta2=0.95 --train_batch_size=12 --sample_num_batches_per_epoch=40 --per_prompt_stat_tracking=True --per_prompt_stat_tracking_buffer_size=32 --tracker_project_name="stable_diffusion_training" --log_with="wandb" --mixed_precision="bf16" --save_freq=100000 --num_checkpoint_limit=4 --train_learning_rate={lr} --use_lora --seed={seed} --no_tail_prompts={no_tail} 
+        mpi: False
+        sku: G1-A100
+        process_count_per_node: 1
+        submit_args:
+          env:
+            NCCL_DEBUG: info
+            _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/bbd59374-b76d-4cb5-88b6-2be35debc7cf/resourceGroups/t-ryanteehan/providers/Microsoft.ManagedIdentity/userAssignedIdentities/t-ryanteehan-ws-uai"
+
+    type: grid
+    max_trials: 16
+    params:
+        - name: seed
+          spec: discrete
+          values: [0, 10, 20, 30, 40]
+        - name: no_tail
+          spec: discrete
+          values: [True, False]
+        - name: lr
+          spec: discrete
+          values: [2.5e-5, 1e-4]
