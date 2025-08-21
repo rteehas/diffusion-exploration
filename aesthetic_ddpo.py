@@ -27,7 +27,6 @@ python ddpo.py \
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import torch
@@ -53,9 +52,7 @@ class ModifiedDDPOConfig(DDPOConfig):
     zero_classifier: bool = field(default=False)
     knockout: bool = field(default=False)
     no_ellipse_prompts: bool = field(default=False)
-    no_tail_prompts: bool = field(default=False)
     amlt: bool = field(default=False)
-    exclude_class: int = field(default=-1)
 
 @dataclass
 class ScriptArguments:

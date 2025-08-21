@@ -1,0 +1,12 @@
+accelerate launch train_autoencoderkl.py \
+    --image_column="image" \
+    --num_train_epochs 10 \
+    --gradient_accumulation_steps 1 \
+    --learning_rate 4.5e-5 \
+    --lr_scheduler="cosine" \
+    --report_to="wandb" \
+    --train_batch_size=128 \
+    --resolution=64 \
+    --output_dir="dsprites_autoencoder_small_res" \
+    --checkpoints_total_limit=4 \
+    --checkpointing_steps=500

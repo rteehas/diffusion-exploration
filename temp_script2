@@ -1,0 +1,7 @@
+python train_vae.py \
+  --latent_dim=256 \
+  --train_batch_size=32 \
+  --epochs=20 \
+  --lr=1e-05 \
+  --max_grad_norm=1 \
+  --lr_scheduler="constant_with_warmup" --lr_warmup_steps=5760 

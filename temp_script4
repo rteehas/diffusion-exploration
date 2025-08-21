@@ -1,0 +1,41 @@
+python ddpo.py \
+    --num_epochs=5000 \
+    --train_gradient_accumulation_steps=1 \
+    --sample_num_steps=50 \
+    --sample_batch_size=15 \
+    --train_batch_size=3 \
+    --sample_num_batches_per_epoch=4 \
+    --per_prompt_stat_tracking=True \
+    --per_prompt_stat_tracking_buffer_size=32 \
+    --tracker_project_name="stable_diffusion_training" \
+    --log_with="wandb" \
+    --hard_rewards=False \
+    --mixed_precision="no" \
+    --save_freq=100000 \
+    --knockout \
+    --num_checkpoint_limit=4 \
+    --train_learning_rate=5e-6 \
+    --seed=16 
+    
+
+
+python aesthetics_ddpo.py \
+    --num_epochs=5000 \
+    --train_gradient_accumulation_steps=1 \
+    --sample_num_steps=50 \
+    --sample_batch_size=32 \
+    --train_batch_size=32 \
+    --sample_num_batches_per_epoch=4 \
+    --per_prompt_stat_tracking=True \
+    --per_prompt_stat_tracking_buffer_size=32 \
+    --tracker_project_name="stable_diffusion_training" \
+    --log_with="wandb" \
+    --hard_rewards=False \
+    --mixed_precision="bf16" \
+    --save_freq=100000 \
+    --knockout \
+    --num_checkpoint_limit=4 \
+    --train_learning_rate=5e-5 \
+    --seed=16 \
+    --use_lora
+    

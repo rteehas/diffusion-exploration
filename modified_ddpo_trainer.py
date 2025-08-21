@@ -63,7 +63,7 @@ class ModifiedDDPOTrainer(PyTorchModelHubMixin):
         sd_pipeline: DDPOStableDiffusionPipeline,
         image_samples_hook: Optional[Callable[[Any, Any, Any], Any]] = None,
         eval_prompts: Optional[list[str]] = None,
-        knockout_class: Optional[str] = None
+        knockout_class: Optional[str] = None,
     ):
         if image_samples_hook is None:
             warn("No image_samples_hook provided; no images will be logged")
