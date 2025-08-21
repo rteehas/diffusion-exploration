@@ -1,0 +1,20 @@
+accelerate launch --mixed_precision="bf16"  train_text_to_image.py \
+  --pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4" \
+  --dataset_name="visual-layer/oxford-iiit-pet-vl-enriched" \
+  --caption_column="caption_enriched" \
+  --resolution=64 \
+  --train_batch_size=5 \
+  --gradient_accumulation_steps=1 \
+  --gradient_checkpointing \
+  --max_train_steps=100000 \
+  --learning_rate=2e-04 \
+  --max_grad_norm=1 \
+  --lr_scheduler="cosine" --lr_warmup_steps=100  \
+  --keep_percent=1.0 \
+  --output_dir="dsprites_1.0_fixed_captions_dummy" \
+  --validation_epochs=100 \
+  --report_to="wandb" \
+  --checkpointing_steps=100000  \
+  --adam_beta2=0.95 \
+  --overfitting \
+  --checkpoints_total_limit=4 
