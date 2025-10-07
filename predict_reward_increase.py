@@ -185,6 +185,80 @@ def plot_rollout_mse_curves(
 
     return [str(p) for p in filepaths] + [str(combined_out)]
 
+def plot_mse_at_k_over_time(
+    mse_by_timestep: dict,
+    k: int,
+    save_dir: Union[str, os.PathLike],
+    filename: Optional[str] = None,
+    dpi: int = 150,
+    history=None
+):
+    """
+    Plot a single curve: for a fixed rollout step k, show MSE@k across timesteps t.
+
+    Args
+      mse_by_timestep: dict[int, Sequence[float]] mapping t -> [mse@1, mse@2, ...]
+      k: 1-indexed rollout step to extract (mse@k)
+      save_dir: directory to save output figure
+      filename: override output filename; default: f"mse_at_k_{k}_over_time.png"
+
+    Returns
+      str path to saved PNG
+    """
+    assert k >= 1, "k is 1-indexed and must be >= 1"
+
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+    if filename is None:
+        filename = f"mse_at_k_{k}_over_time.png"
+
+    # Collect (t, mse@k) pairs; skip timesteps without k steps of rollout
+    ts = []
+    ys = []
+    for t, mse_list in sorted(mse_by_timestep.items()):
+        if len(mse_list) >= k:
+            ts.append(t)
+            ys.append(float(mse_list[k - 1]))
+
+    fig = plt.figure()
+    plt.plot(list(range(len(ys))), ys)
+    if history is not None:
+        per_timestep_mse1, mse_by_timestep_baseline = baseline_mean_mse1(history, B=11)
+        ts_baseline = []
+        ys_baseline = []
+        for t, mse_list in sorted(mse_by_timestep_baseline.items()):
+            ts_baseline.append(t)
+            ys_baseline.append(float(mse_list[k - 1]))
+        
+        plt.plot(list(range(len(ys_baseline))), ys_baseline, label="mean prediction baseline")
+    plt.xlabel("Timestep t")
+    plt.ylabel(f"MSE@{k}")
+    plt.title(f"MSE at rollout step k={k} across timesteps")
+    if history is not None:
+        plt.legend()
+
+    out = save_path / filename
+    fig.savefig(out, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+    if history is not None:
+        deltas = []
+        for (y, y_baseline) in zip(ys, ys_baseline):
+            deltas.append(y_baseline - y)
+        
+        plt.cla()
+        plt.clf()
+        fig = plt.figure()
+        plt.plot(list(range(len(deltas))), deltas)
+        plt.xlabel("Timestep t")
+        plt.ylabel(f"Delta MSE@{k}")
+        plt.title(f"Mean Prediction MSE - Model MSE at rollout step k={k}")
+        delta_filename = "delta_" + filename
+        fig.savefig(save_path / delta_filename,dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+    return str(out)
+
+
 def mean_pool_hidden(hidden: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     """Mean-pool non-pad tokens from CLIP text hidden states.
     hidden: (B, T, D)
@@ -509,6 +583,40 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, :T]
         return self.dropout(x)
 
+def baseline_mean_mse1(
+    rewards: torch.Tensor,
+    B: int,
+) -> Tuple[dict, dict]:
+    """
+    Compute MSE@1 for a simple baseline that predicts, for each prompt p at time t,
+    the mean of that prompt's past reward deltas over the prefix [0..t-1].
+
+    Args
+      rewards: (N, P) tensor of reward increases
+      B: initial prefix length; first evaluated target is t=B
+      S: number of consecutive timesteps to evaluate (defaults to N - B)
+
+    Returns
+      per_timestep_mse1: {t: float}
+      mse_by_timestep_like: {t: [float]}  # same schema as model's mse@k dicts
+    """
+    assert rewards.ndim == 2, "rewards must be (N, P)"
+    N, P = rewards.shape
+    assert 1 <= B <= N - 1, "B must be in [1, N-1]"
+
+    per_timestep_mse1 = {}
+    mse_by_timestep_like = {}
+    for t in range(B-1, N):
+        hist = rewards[:t, :]  # (t, P)
+        pred = hist.mean(dim=0)  # (P,)
+        gt = rewards[t, :]       # (P,)
+        mse = torch.mean((pred - gt) ** 2).item()
+        per_timestep_mse1[int(t)] = float(mse)
+        mse_by_timestep_like[int(t)] = [float(mse)]  # so it can plug into plot_rollout_mse_curves
+
+    return per_timestep_mse1, mse_by_timestep_like
+
+
 # ------------------------------
 # Block-wise training with progressive validation
 # ------------------------------
@@ -516,7 +624,7 @@ class PositionalEncoding(nn.Module):
 @dataclass
 class TrainConfig:
     lr: float = 3e-4
-    weight_decay: float = 0.01
+    weight_decay: float = 0.0
     grad_clip: float = 1.0
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     use_first_step_only: bool = True  # train on step B only (ignores multi-step head beyond step-1)
